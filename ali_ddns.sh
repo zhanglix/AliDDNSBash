@@ -273,8 +273,11 @@ update_record()
 
 main()
 {
-	describe_record
-	#update_record
+	if [ "X$1" = "X" ];  then 
+		describe_record
+	else 
+		update_record
+	fi
 }
 
-main
+main $1

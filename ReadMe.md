@@ -27,7 +27,7 @@
 
 然后安装 *bind-dig*，*curl*，*openssl-util*。这些软件包在OpenWRT下可直接使用 *opkg* 命令安装。
 
-2. 修改脚本的`setting`代码段，其中`DomainRecordId`不清楚的话暂时不用修改，`DNSServer`修改为你在万网上使用的DNS服务器。如:
+2. 修改脚本`ali_ddns.sh`的`setting`代码段，其中`DomainRecordId`不清楚的话暂时不用修改，`DNSServer`修改为你在万网上使用的DNS服务器。如:
 ```sh
 AccessKeyId="MyID"
 AccessKeySec="MySecret"
@@ -38,7 +38,7 @@ DomainType="A"
 DNSServer="dns9.hichina.com"
 ```
 
-3. 如果不清楚DomainRecordId的话，直接运行本脚本查询，如果没问题的话，就能获取到域名的所有解析记录的列表了：
+3. 如果不清楚DomainRecordId的话，直接运行本脚本`ali_ddns.sh`查询，如果没问题的话，就能获取到域名的所有解析记录的列表了：
 ```JSON
 {"PageNumber":1,"TotalCount":1,"PageSize":1,"RequestId":"0000","DomainRecords":
   {"Record":[{"RR":"www","Status":"ENABLE","Value":"8.8.8.8",
@@ -48,4 +48,4 @@ DNSServer="dns9.hichina.com"
 ```
   上面的结果中，RecordId为*21332133*。得到结果后再修改`DomainRecordId`为正确的值。
   
-4. 执行本脚本时带上任意非空参数，如"up", 即可更新DNS记录。脚本会在本机IP地址和当前域名解析设置不同的时候调用API更新设置。
+4. 执行本脚本时带上任意非空参数，如`ali_ddns.sh up`, 即可更新DNS记录。脚本会在本机IP地址和当前域名解析设置不同的时候调用API更新设置。

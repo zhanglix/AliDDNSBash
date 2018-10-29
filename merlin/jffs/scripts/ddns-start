@@ -1,0 +1,5 @@
+#!/bin/sh
+
+/opt/bin/ali_ddns.sh up
+
+/sbin/ddns_custom_updated 1

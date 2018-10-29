@@ -38,15 +38,7 @@ DomainType="A"
 DNSServer="dns9.hichina.com"
 ```
 
-3. 如果不清楚DomainRecordId的话，修改`main`函数，在里面调用`describe_record`，如：
-```sh
-	main()
-	{
-		describe_record
-		#update_record
-	}
-```
-  然后执行这个脚本。如果没问题的话，就能获取到域名的所有解析记录的列表了：
+3. 如果不清楚DomainRecordId的话，直接运行本脚本查询，如果没问题的话，就能获取到域名的所有解析记录的列表了：
 ```JSON
 {"PageNumber":1,"TotalCount":1,"PageSize":1,"RequestId":"0000","DomainRecords":
   {"Record":[{"RR":"www","Status":"ENABLE","Value":"8.8.8.8",
@@ -56,12 +48,4 @@ DNSServer="dns9.hichina.com"
 ```
   上面的结果中，RecordId为*21332133*。得到结果后再修改`DomainRecordId`为正确的值。
   
-4. 修改`main`函数：
-```sh
-	main()
-	{
-		#describe_record
-		update_record
-	}
-```
-  执行脚本即可。脚本会在本机IP地址和当前域名解析设置不同的时候调用API更新设置。
+4. 执行本脚本时带上任意非空参数，如"up", 即可更新DNS记录。脚本会在本机IP地址和当前域名解析设置不同的时候调用API更新设置。

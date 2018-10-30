@@ -1,0 +1,11 @@
+#!/bin/sh
+
+#lighthttpd
+iptables -I INPUT -p tcp --destination-port 81 -j ACCEPT
+
+#aria2
+iptables -I INPUT -p tcp --destination-port 6800 -j ACCEPT
+
+#bt
+iptables -I INPUT -p tcp --destination-port 51413 -j ACCEPT
+iptables -I INPUT -p udp --destination-port 51413 -j ACCEPT

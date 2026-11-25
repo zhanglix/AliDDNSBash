@@ -49,3 +49,14 @@ DNSServer="dns9.hichina.com"
   上面的结果中，RecordId为*21332133*。得到结果后再修改`DomainRecordId`为正确的值。
   
 4. 执行本脚本时带上任意非空参数，如`ali_ddns.sh up`, 即可更新DNS记录。脚本会在本机IP地址和当前域名解析设置不同的时候调用API更新设置。
+
+## Cloudflare 版本
+
+`opt/bin/cf_ddns.sh` 是 Cloudflare 版的 DDNS 脚本（只依赖 `curl`，使用 HTTPS 和 API Token）。
+配置示例见 `opt/etc/cf_ddns.conf.example`，设计说明与原脚本的问题分析见 [docs/cloudflare-design.md](docs/cloudflare-design.md)。
+
+```sh
+cf_ddns.sh verify        # 检查 Token
+cf_ddns.sh check         # 显示本机 IP 与当前记录
+cf_ddns.sh update [IP]   # 更新记录
+```

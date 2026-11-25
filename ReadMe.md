@@ -52,8 +52,8 @@ DNSServer="dns9.hichina.com"
 
 ## Cloudflare 版本
 
-`opt/bin/cf_ddns.sh` 是 Cloudflare 版的 DDNS 脚本（只依赖 `curl`，使用 HTTPS 和 API Token）。
-配置示例见 `opt/etc/cf_ddns.conf.example`，设计说明与原脚本的问题分析见 [docs/cloudflare-design.md](docs/cloudflare-design.md)。
+`jffs/scripts/cf_ddns.sh` 是 Cloudflare 版的 DDNS 脚本，可直接在华硕路由器（Asuswrt-Merlin）自带的 BusyBox ash 上运行（只依赖固件自带的 `curl`、`sed`、`tr`、`head`，使用 HTTPS 和 API Token）。
+配置示例见 `jffs/addons/cf_ddns/cf_ddns.conf.example`，华硕路由器安装步骤见设计文档 4.7 节，设计说明与原脚本的问题分析见 [docs/cloudflare-design.md](docs/cloudflare-design.md)。
 
 ```sh
 cf_ddns.sh verify        # 检查 Token

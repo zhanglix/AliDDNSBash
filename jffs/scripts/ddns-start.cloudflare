@@ -3,7 +3,7 @@
 # Install as /jffs/scripts/ddns-start (chmod +x) and pick "Custom" DDNS in the web UI.
 # Merlin passes the WAN IP as $1, so no external IP echo service is needed.
 
-if /opt/bin/cf_ddns.sh update "$1"; then
+if /jffs/scripts/cf_ddns.sh update "$1"; then
 	/sbin/ddns_custom_updated 1
 else
 	/sbin/ddns_custom_updated 0

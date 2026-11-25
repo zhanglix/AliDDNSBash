@@ -1,8 +1,10 @@
 #!/bin/sh
-# cf_ddns.sh - Cloudflare DDNS updater for routers (OpenWrt / Asuswrt-Merlin / Entware)
+# cf_ddns.sh - Cloudflare DDNS updater for ASUS routers (Asuswrt-Merlin),
+# also usable on OpenWrt and any Linux.
 #
-# POSIX sh. Dependencies: curl (with HTTPS), grep, sed, head.
-# Optional: jq or jsonfilter (OpenWrt) for more robust JSON parsing.
+# Runs on BusyBox ash. Needs only what the firmware ships: curl (HTTPS),
+# sed, tr, head. No grep, jq, openssl or dig required (jq/jsonfilter are
+# used if present).
 #
 # Usage:
 #   cf_ddns.sh list              List DNS records of the zone that match CF_RECORD_NAME
@@ -15,7 +17,14 @@
 
 ## ----- Configuration -----
 # Values come from (later wins): built-in defaults < config file < environment.
-CF_CONFIG="${CF_CONFIG:-/opt/etc/cf_ddns.conf}"
+# Default config: first existing of the paths below.
+if [ -z "${CF_CONFIG-}" ]; then
+	for _c in /jffs/addons/cf_ddns/cf_ddns.conf /opt/etc/cf_ddns.conf \
+		"$(dirname "$0")/cf_ddns.conf"; do
+		[ -r "$_c" ] && { CF_CONFIG=$_c; break; }
+	done
+	CF_CONFIG=${CF_CONFIG:-/jffs/addons/cf_ddns/cf_ddns.conf}
+fi
 
 # Remember the environment so it can override the config file.
 _env_token="${CF_API_TOKEN-}";     _env_zone="${CF_ZONE_NAME-}"
@@ -23,7 +32,7 @@ _env_zone_id="${CF_ZONE_ID-}";     _env_name="${CF_RECORD_NAME-}"
 _env_type="${CF_RECORD_TYPE-}";    _env_proxied="${CF_PROXIED-}"
 _env_ttl="${CF_TTL-}";             _env_create="${CF_CREATE_MISSING-}"
 _env_ipurl="${CF_IP_URL-}";        _env_cache="${CF_CACHE_DIR-}"
-_env_api="${CF_API_BASE-}"
+_env_api="${CF_API_BASE-}";       _env_curl="${CF_CURL_OPTS-}"
 
 CF_API_TOKEN=""            # Scoped API token with Zone:DNS:Edit on the zone
 CF_ZONE_NAME=""            # e.g. example.com
@@ -36,6 +45,7 @@ CF_CREATE_MISSING="false"  # create the record if it does not exist
 CF_IP_URL=""               # IP echo service; default depends on record type
 CF_CACHE_DIR="/tmp/cf_ddns"
 CF_API_BASE="https://api.cloudflare.com/client/v4"
+CF_CURL_OPTS=""            # extra curl options, e.g. "--cacert /path/ca.crt"
 
 # shellcheck source=/dev/null
 [ -r "$CF_CONFIG" ] && . "$CF_CONFIG"
@@ -51,6 +61,7 @@ CF_API_BASE="https://api.cloudflare.com/client/v4"
 [ -n "$_env_ipurl" ]   && CF_IP_URL="$_env_ipurl"
 [ -n "$_env_cache" ]   && CF_CACHE_DIR="$_env_cache"
 [ -n "$_env_api" ]     && CF_API_BASE="$_env_api"
+[ -n "$_env_curl" ]    && CF_CURL_OPTS="$_env_curl"
 
 CF_QUIET="${CF_QUIET:-false}"
 CF_DEBUG="${CF_DEBUG:-false}"
@@ -64,8 +75,8 @@ die() { _code=$1; shift; _err "$@"; exit "$_code"; }
 
 ## ----- JSON helpers -----
 # Cloudflare returns compact JSON. jq / jsonfilter are used when present;
-# otherwise a grep/sed fallback extracts the first string value of a key,
-# which is sufficient for single-object lookups.
+# otherwise a tr/sed fallback (BusyBox-safe, no grep) extracts the first
+# value of a key, which is sufficient for single-object lookups.
 JSON_TOOL="${CF_JSON_TOOL:-}"
 if [ -z "$JSON_TOOL" ]; then
 	if command -v jq >/dev/null 2>&1; then JSON_TOOL=jq
@@ -84,10 +95,10 @@ json_result_field() {
 		printf '%s' "$1" | jsonfilter -q -e "@.result[0].$2" 2>/dev/null ||
 			printf '%s' "$1" | jsonfilter -q -e "@.result.$2" ;;
 	*)
-		# first "key":"value" or "key":literal after "result"
-		printf '%s' "$1" | sed 's/.*"result"://' |
-			grep -oE "\"$2\":(\"[^\"]*\"|[a-z0-9.]*)" | head -n 1 |
-			sed "s/^\"$2\"://; s/^\"//; s/\"\$//" ;;
+		# Split on JSON punctuation into one "key":value per line, then pick
+		# the first line for the key (after the "result" member).
+		printf '%s' "$1" | sed 's/.*"result"://' | tr ',{}[]' '\n\n\n\n\n' |
+			sed -n "s/^\"$2\":\"\{0,1\}\([^\"]*\)\"\{0,1\}\$/\1/p" | head -n 1 ;;
 	esac
 }
 
@@ -95,26 +106,45 @@ json_success() {
 	case "$JSON_TOOL" in
 	jq)         [ "$(printf '%s' "$1" | jq -r '.success')" = true ] ;;
 	jsonfilter) [ "$(printf '%s' "$1" | jsonfilter -q -e '@.success')" = true ] ;;
-	*)          printf '%s' "$1" | grep -q '"success": *true' ;;
+	*)          case "$1" in *'"success":true'*|*'"success": true'*) return 0 ;; *) return 1 ;; esac ;;
 	esac
 }
 
 json_errors() {
 	case "$JSON_TOOL" in
 	jq) printf '%s' "$1" | jq -r '.errors[]? | "\(.code): \(.message)"' 2>/dev/null ;;
-	*)  printf '%s' "$1" | grep -o '"message":"[^"]*"' | sed 's/"message":"//; s/"$//' ;;
+	*)  printf '%s' "$1" | tr ',{}[]' '\n\n\n\n\n' | sed -n 's/^"message":"\(.*\)"$/\1/p' ;;
 	esac
 }
 
 ## ----- Validation -----
+# Pure shell checks (no grep), safe on BusyBox ash.
 is_ipv4() {
-	printf '%s' "$1" | grep -Eq '^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}$'
+	case "$1" in ''|*[!0-9.]*|.*|*.|*..*) return 1 ;; esac
+	_oldifs=$IFS; IFS=.
+	# shellcheck disable=SC2086
+	set -- $1
+	IFS=$_oldifs
+	[ $# -eq 4 ] || return 1
+	for _o in "$@"; do
+		case "$_o" in 0?*|????*) return 1 ;; esac
+		[ "$_o" -le 255 ] || return 1
+	done
 }
 
 is_ipv6() {
-	# loose check: hex groups and colons, at least two colons
-	printf '%s' "$1" | grep -Eq '^[0-9A-Fa-f:]+$' &&
-		[ "$(printf '%s' "$1" | tr -cd ':' | wc -c)" -ge 2 ]
+	# loose check: only hex digits and colons, at least two colons
+	case "$1" in ''|*[!0-9A-Fa-f:]*) return 1 ;; *:*:*) return 0 ;; *) return 1 ;; esac
+}
+
+# Private / CGNAT / link-local IPv4 (e.g. ASUS WAN behind another router)
+is_private_ipv4() {
+	case "$1" in
+	10.*|192.168.*|127.*|169.254.*) return 0 ;;
+	172.1[6-9].*|172.2[0-9].*|172.3[01].*) return 0 ;;
+	100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*) return 0 ;;
+	esac
+	return 1
 }
 
 is_valid_ip() {
@@ -143,12 +173,12 @@ cf_api() {
 	_debug "$_method $CF_API_BASE$_path ${_body}"
 	if [ -n "$_body" ]; then
 		printf 'header = "Authorization: Bearer %s"\n' "$CF_API_TOKEN" |
-		curl --silent --show-error --connect-timeout 10 --max-time 30 \
+		curl $CF_CURL_OPTS --silent --show-error --connect-timeout 10 --max-time 30 \
 			--config - -X "$_method" -H "Content-Type: application/json" \
 			--data "$_body" "$CF_API_BASE$_path"
 	else
 		printf 'header = "Authorization: Bearer %s"\n' "$CF_API_TOKEN" |
-		curl --silent --show-error --connect-timeout 10 --max-time 30 \
+		curl $CF_CURL_OPTS --silent --show-error --connect-timeout 10 --max-time 30 \
 			--config - -X "$_method" "$CF_API_BASE$_path"
 	fi
 }
@@ -175,7 +205,7 @@ detect_ip() {
 	else
 		_fam=-4; [ -n "$_url" ] || _url="https://1.1.1.1/cdn-cgi/trace"
 	fi
-	_out=$(curl "$_fam" --silent --connect-timeout 10 --max-time 20 "$_url") || return 1
+	_out=$(curl $CF_CURL_OPTS "$_fam" --silent --connect-timeout 10 --max-time 20 "$_url") || return 1
 	# cdn-cgi/trace returns "key=value" lines; other services return a bare IP.
 	_ip=$(printf '%s\n' "$_out" | sed -n 's/^ip=//p' | head -n 1)
 	[ -n "$_ip" ] || _ip=$(printf '%s\n' "$_out" | head -n 1 | tr -d ' \r')
@@ -248,6 +278,12 @@ cmd_check() {
 cmd_update() {
 	check_config
 	_ip=${1-}
+	# ASUS passes its WAN IP; behind another router/CGNAT that is a private
+	# address, so fall back to asking an external service.
+	if [ "$CF_RECORD_TYPE" = A ] && [ -n "$_ip" ] && is_private_ipv4 "$_ip"; then
+		_log "WAN IP $_ip is private (double NAT?), detecting public IP instead"
+		_ip=""
+	fi
 	if [ -z "$_ip" ]; then
 		_ip=$(detect_ip) || die 2 "Could not detect public IP"
 	fi

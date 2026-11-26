@@ -74,11 +74,16 @@ The cost: if someone edits the record by hand in the dashboard, the cache hides 
 
 In order of preference:
 
-1. IP given as an argument. The Merlin hook passes the WAN IP as `$1`. If that is a private or CGNAT address (10/8, 172.16/12, 192.168/16, 100.64/10), meaning the ASUS sits behind another router or the ISP uses carrier-grade NAT, the script ignores it and detects the public IP instead.
-2. `https://1.1.1.1/cdn-cgi/trace` (A) or `https://[2606:4700:4700::1111]/cdn-cgi/trace` (AAAA), with `curl -4` or `-6`. This is HTTPS, run by the same provider, and IP-literal, so it works even when DNS is broken. The `ip=` line is parsed.
-3. `CF_IP_URL` override, for any service that returns either a bare IP or `ip=`.
+The device running the script often doesn't have the public IP on its own interface. For example, it sits behind an ISP gateway that can't run custom scripts. So detecting the IP with `curl` is the main path, as in `ali_ddns.sh`:
 
-The result is **validated** as IPv4 or IPv6 before use, so garbage is never written to DNS. This was confirmed in testing: an error page from the echo service was rejected.
+1. If an IP is given as an argument and it's public, use it. The Merlin hook passes the WAN IP as `$1`. A private or CGNAT address (10/8, 172.16/12, 192.168/16, 100.64/10) is ignored, and the script falls through to detection.
+2. Otherwise try the services in `CF_IP_URLS` in order, with `curl -4` or `-6`, and take the **first answer that is a valid public IP**. A service that times out, returns an HTML or error page, or returns a private address is skipped. The defaults are:
+   * A: `https://1.1.1.1/cdn-cgi/trace`, then `http://members.3322.org/dyndns/getip` (the service `ali_ddns.sh` uses, and reachable from mainland China), then `https://api.ipify.org`, then `https://icanhazip.com`.
+   * AAAA: `https://[2606:4700:4700::1111]/cdn-cgi/trace`, then `https://api6.ipify.org`, then `https://ipv6.icanhazip.com`.
+
+   A service can return a bare IP or `ip=…` lines (Cloudflare's trace format). `CF_IP_URL` from older configs is still accepted as a one-item list.
+
+The IP is detected once per run and shared by all the records being updated.
 
 ### 4.5 Configuration
 
@@ -86,11 +91,38 @@ The order is built-in defaults, then the config file (sourced, should be `chmod 
 
 `CF_PROXIED=keep` (the default) keeps the record's current proxy setting, so a DDNS update never accidentally turns the orange cloud on or off.
 
-### 4.6 Commands and exit codes
+### 4.6 Commands, arguments and exit codes
 
 ```
-cf_ddns.sh list | update [IP] | check | verify
+cf_ddns.sh                          list records for CF_RECORD_NAME
+cf_ddns.sh up|update [NAME...] [IP] update record(s)
+cf_ddns.sh NAME... [IP]             same as update
+cf_ddns.sh list  [NAME]
+cf_ddns.sh check [NAME]             detected public IP vs the record's value
+cf_ddns.sh verify                   check the API token
 ```
+
+**Record names.** `NAME` is a subdomain of `CF_ZONE_NAME`, the same idea as `DomainRR` in `ali_ddns.sh`:
+
+| Argument | Record updated (zone `example.com`) |
+|----------|-------------------------------------|
+| `www` | `www.example.com` |
+| `home.lab` | `home.lab.example.com` |
+| `@` | `example.com` |
+| `www.example.com` | `www.example.com` (already a full name) |
+| `nas.other.org.` | `nas.other.org` (trailing dot means absolute) |
+
+With no name, `CF_RECORD_NAME` from the config is used. Several names can be updated in one run (`cf_ddns.sh up www nas @`). A failure on one name doesn't stop the others; the exit code is the worst result. An argument made of digits and dots, or containing `:`, is taken as an IP and validated, so a mistyped IP is never turned into a record name.
+
+**Compatibility with `ali_ddns.sh`:**
+
+| Call | `ali_ddns.sh` | `cf_ddns.sh` |
+|------|---------------|--------------|
+| no arguments | list records | list records |
+| `up` | update | update |
+| any other argument | update (the argument is ignored) | update, and the argument is the record name |
+
+Existing crontab entries and `ddns-start` calls (`… up`) therefore work unchanged.
 
 | Exit code | Meaning |
 |------|---------|
@@ -129,6 +161,6 @@ The Merlin hook (`jffs/scripts/ddns-start.cloudflare`) maps these to `ddns_custo
 
 ## 5. Testing
 
-The script was exercised against a local mock of the Cloudflare v4 API under **BusyBox ash** (v1.36, with only `curl` and BusyBox tools on `PATH`), **dash** and **bash**, with both the jq and the sed JSON back ends. IP validation was also checked: private and CGNAT WAN IPs fall back to detection, and `256.1.1.1`, `01.2.3.4`, `1.2.3` and an IPv4 address for an AAAA record are all rejected. The cases were: token verify (valid and invalid), list, detect and update, the cached no-op, invalid-IP rejection, a missing record (error, then create with `CF_CREATE_MISSING`), and `proxied` preservation on PATCH.
+The script was exercised against a local mock of the Cloudflare v4 API under **BusyBox ash** (v1.36, with only `curl` and BusyBox tools on `PATH`), **dash** and **bash**, with both the jq and the sed JSON back ends. IP validation was also checked: private and CGNAT WAN IPs fall back to detection, and `256.1.1.1`, `01.2.3.4`, `1.2.3` and an IPv4 address for an AAAA record are all rejected. The service fallback was tested with a chain of a dead host, an HTML page, a private IP and then a bare IP; the bare IP was used, and a chain with no usable answer exits with code 2. Arguments tested: no arguments, `up`, any other argument, `@`, multi-level names, full names, several names in one run, and a name containing shell characters (rejected). The cases were: token verify (valid and invalid), list, detect and update, the cached no-op, invalid-IP rejection, a missing record (error, then create with `CF_CREATE_MISSING`), and `proxied` preservation on PATCH.
 
 It hasn't been run on a real ASUS router (whose BusyBox version and curl build vary by model), against the real Cloudflare API, or with `jsonfilter`. A first real run should use `verify`, then `check`, before `update`.

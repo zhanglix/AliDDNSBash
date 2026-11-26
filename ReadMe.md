@@ -53,10 +53,13 @@ DNSServer="dns9.hichina.com"
 ## Cloudflare 版本
 
 `jffs/scripts/cf_ddns.sh` 是 Cloudflare 版的 DDNS 脚本，可直接在华硕路由器（Asuswrt-Merlin）自带的 BusyBox ash 上运行（只依赖固件自带的 `curl`、`sed`、`tr`、`head`，使用 HTTPS 和 API Token）。
+公网 IP 通过 curl 依次查询多个服务获取（1.1.1.1、3322.org、ipify、icanhazip），适用于运行脚本的设备 WAN 口上没有公网 IP 的情况。
 配置示例见 `jffs/addons/cf_ddns/cf_ddns.conf.example`，华硕路由器安装步骤见设计文档 4.7 节，设计说明与原脚本的问题分析见 [docs/cloudflare-design.md](docs/cloudflare-design.md)。
 
 ```sh
-cf_ddns.sh verify        # 检查 Token
-cf_ddns.sh check         # 显示本机 IP 与当前记录
-cf_ddns.sh update [IP]   # 更新记录
+cf_ddns.sh                    # 列出记录（与 ali_ddns.sh 相同）
+cf_ddns.sh up                 # 更新配置中的默认子域名（与 ali_ddns.sh up 相同）
+cf_ddns.sh up www nas @       # 更新指定子域名，@ 为根域名
+cf_ddns.sh check [子域名]      # 显示检测到的公网 IP 与当前记录
+cf_ddns.sh verify             # 检查 Token
 ```

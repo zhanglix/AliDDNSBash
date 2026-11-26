@@ -7,10 +7,16 @@
 # used if present).
 #
 # Usage:
-#   cf_ddns.sh list              List DNS records of the zone that match CF_RECORD_NAME
-#   cf_ddns.sh update [IP]       Update the record to IP (detected if omitted)
-#   cf_ddns.sh check             Print detected IP and the record's current content
-#   cf_ddns.sh verify            Verify that the API token is valid
+#   cf_ddns.sh                         List records for CF_RECORD_NAME (like ali_ddns.sh)
+#   cf_ddns.sh up|update [NAME...] [IP] Update record(s); IP is detected if omitted
+#   cf_ddns.sh NAME... [IP]            Same as "update" (any other argument updates,
+#                                      as with ali_ddns.sh)
+#   cf_ddns.sh list  [NAME]            List records with this name
+#   cf_ddns.sh check [NAME]            Show detected public IP and the record's value
+#   cf_ddns.sh verify                  Check that the API token is valid
+#
+# NAME is a subdomain of CF_ZONE_NAME ("www", "home.lab", "@" for the zone
+# apex) or a full name ("www.example.com"). Default: CF_RECORD_NAME.
 #
 # Exit codes: 0 ok / no change needed, 1 config error, 2 IP detection or
 # network error, 3 Cloudflare API error.
@@ -31,18 +37,19 @@ _env_token="${CF_API_TOKEN-}";     _env_zone="${CF_ZONE_NAME-}"
 _env_zone_id="${CF_ZONE_ID-}";     _env_name="${CF_RECORD_NAME-}"
 _env_type="${CF_RECORD_TYPE-}";    _env_proxied="${CF_PROXIED-}"
 _env_ttl="${CF_TTL-}";             _env_create="${CF_CREATE_MISSING-}"
-_env_ipurl="${CF_IP_URL-}";        _env_cache="${CF_CACHE_DIR-}"
+_env_ipurl="${CF_IP_URLS-${CF_IP_URL-}}";        _env_cache="${CF_CACHE_DIR-}"
 _env_api="${CF_API_BASE-}";       _env_curl="${CF_CURL_OPTS-}"
 
 CF_API_TOKEN=""            # Scoped API token with Zone:DNS:Edit on the zone
 CF_ZONE_NAME=""            # e.g. example.com
 CF_ZONE_ID=""              # optional; looked up from CF_ZONE_NAME and cached
-CF_RECORD_NAME=""          # full name, e.g. www.example.com (or example.com)
+CF_RECORD_NAME=""          # default record: "www", "@" or "www.example.com"
 CF_RECORD_TYPE="A"         # A or AAAA
 CF_PROXIED="keep"          # true | false | keep (leave as is on update)
 CF_TTL="1"                 # 1 = automatic, otherwise 60..86400
 CF_CREATE_MISSING="false"  # create the record if it does not exist
-CF_IP_URL=""               # IP echo service; default depends on record type
+CF_IP_URLS=""              # IP echo services to try in order (space separated);
+                           # default depends on record type, see detect_ip
 CF_CACHE_DIR="/tmp/cf_ddns"
 CF_API_BASE="https://api.cloudflare.com/client/v4"
 CF_CURL_OPTS=""            # extra curl options, e.g. "--cacert /path/ca.crt"
@@ -58,7 +65,9 @@ CF_CURL_OPTS=""            # extra curl options, e.g. "--cacert /path/ca.crt"
 [ -n "$_env_proxied" ] && CF_PROXIED="$_env_proxied"
 [ -n "$_env_ttl" ]     && CF_TTL="$_env_ttl"
 [ -n "$_env_create" ]  && CF_CREATE_MISSING="$_env_create"
-[ -n "$_env_ipurl" ]   && CF_IP_URL="$_env_ipurl"
+[ -n "$_env_ipurl" ]   && CF_IP_URLS="$_env_ipurl"
+# CF_IP_URL (single URL) from older configs is still honoured
+[ -z "$CF_IP_URLS" ] && [ -n "${CF_IP_URL-}" ] && CF_IP_URLS="$CF_IP_URL"
 [ -n "$_env_cache" ]   && CF_CACHE_DIR="$_env_cache"
 [ -n "$_env_api" ]     && CF_API_BASE="$_env_api"
 [ -n "$_env_curl" ]    && CF_CURL_OPTS="$_env_curl"
@@ -158,7 +167,7 @@ is_valid_ip() {
 check_config() {
 	[ -n "$CF_API_TOKEN" ]   || die 1 "CF_API_TOKEN is not set (config: $CF_CONFIG)"
 	[ -n "$CF_ZONE_NAME" ] || [ -n "$CF_ZONE_ID" ] || die 1 "Set CF_ZONE_NAME or CF_ZONE_ID"
-	[ -n "$CF_RECORD_NAME" ] || die 1 "CF_RECORD_NAME is not set"
+	[ -n "$CF_RECORD_NAME" ] || die 1 "No record name: pass a subdomain or set CF_RECORD_NAME"
 	case "$CF_RECORD_TYPE" in A|AAAA) ;; *) die 1 "CF_RECORD_TYPE must be A or AAAA" ;; esac
 	case "$CF_PROXIED" in true|false|keep) ;; *) die 1 "CF_PROXIED must be true, false or keep" ;; esac
 	case "$CF_TTL" in ''|*[!0-9]*) die 1 "CF_TTL must be a number" ;; esac
@@ -198,18 +207,49 @@ cf_api_ok() {
 }
 
 ## ----- IP detection -----
+# The device running this script may sit behind a gateway that cannot run
+# scripts, so its own interfaces do not show the public IP. Ask external
+# services instead, in order, and use the first answer that is a valid
+# public address. 3322.org is reachable from mainland China where 1.1.1.1
+# may not be.
+DEFAULT_IP_URLS_4="https://1.1.1.1/cdn-cgi/trace http://members.3322.org/dyndns/getip https://api.ipify.org https://icanhazip.com"
+DEFAULT_IP_URLS_6="https://[2606:4700:4700::1111]/cdn-cgi/trace https://api6.ipify.org https://ipv6.icanhazip.com"
+
 detect_ip() {
-	_url="$CF_IP_URL"
 	if [ "$CF_RECORD_TYPE" = AAAA ]; then
-		_fam=-6; [ -n "$_url" ] || _url="https://[2606:4700:4700::1111]/cdn-cgi/trace"
+		_fam=-6; _urls=${CF_IP_URLS:-$DEFAULT_IP_URLS_6}
 	else
-		_fam=-4; [ -n "$_url" ] || _url="https://1.1.1.1/cdn-cgi/trace"
+		_fam=-4; _urls=${CF_IP_URLS:-$DEFAULT_IP_URLS_4}
 	fi
-	_out=$(curl $CF_CURL_OPTS "$_fam" --silent --connect-timeout 10 --max-time 20 "$_url") || return 1
-	# cdn-cgi/trace returns "key=value" lines; other services return a bare IP.
-	_ip=$(printf '%s\n' "$_out" | sed -n 's/^ip=//p' | head -n 1)
-	[ -n "$_ip" ] || _ip=$(printf '%s\n' "$_out" | head -n 1 | tr -d ' \r')
-	printf '%s' "$_ip"
+	for _url in $_urls; do
+		_out=$(curl $CF_CURL_OPTS "$_fam" --silent --connect-timeout 8 --max-time 15 "$_url") || {
+			_debug "IP service failed: $_url"; continue; }
+		# cdn-cgi/trace returns "key=value" lines; others return a bare IP.
+		_ip=$(printf '%s\n' "$_out" | sed -n 's/^ip=//p' | head -n 1)
+		[ -n "$_ip" ] || _ip=$(printf '%s\n' "$_out" | head -n 1 | tr -d ' \r\t')
+		if is_valid_ip "$_ip" && ! { [ "$_fam" = -4 ] && is_private_ipv4 "$_ip"; }; then
+			_debug "IP $_ip from $_url"
+			printf '%s' "$_ip"
+			return 0
+		fi
+		_debug "IP service gave unusable answer: $_url"
+	done
+	return 1
+}
+
+# Turn a subdomain ("www", "@", "home.lab") or full name into a full name.
+# @1 name  -> sets FQDN
+resolve_name() {
+	_n=$1
+	if [ -z "$CF_ZONE_NAME" ]; then
+		FQDN=$_n; return 0     # zone given by ID only: names must be full
+	fi
+	case "$_n" in
+	''|@)                     FQDN=$CF_ZONE_NAME ;;
+	"$CF_ZONE_NAME"|*."$CF_ZONE_NAME") FQDN=$_n ;;
+	*.)                       FQDN=${_n%.} ;;          # trailing dot = absolute
+	*)                        FQDN=$_n.$CF_ZONE_NAME ;;
+	esac
 }
 
 ## ----- Zone / record lookup -----
@@ -256,7 +296,9 @@ cmd_verify() {
 }
 
 cmd_list() {
+	[ -n "${1-}" ] && CF_RECORD_NAME=$1
 	check_config
+	resolve_name "$CF_RECORD_NAME"; CF_RECORD_NAME=$FQDN
 	get_zone_id
 	cf_api_ok GET "/zones/${CF_ZONE_ID}/dns_records?name=${CF_RECORD_NAME}"
 	if [ "$JSON_TOOL" = jq ]; then
@@ -267,28 +309,58 @@ cmd_list() {
 }
 
 cmd_check() {
+	[ -n "${1-}" ] && CF_RECORD_NAME=$1
 	check_config
-	_ip=$(detect_ip) || die 2 "Could not detect public IP"
+	resolve_name "$CF_RECORD_NAME"; CF_RECORD_NAME=$FQDN
+	_ip=$(detect_ip) || die 2 "Could not detect public IP from: ${CF_IP_URLS:-defaults}"
 	get_zone_id
 	get_record
 	echo "detected: ${_ip:-<none>}"
 	echo "record:   ${REC_CONTENT:-<missing>} (id ${REC_ID:-none})"
 }
 
+# Arguments: any mix of record names and at most one IP address.
 cmd_update() {
+	_ip=""; _names=""
+	for _a in "$@"; do
+		# Digits-and-dots or anything with ":" is meant as an IP (validated
+		# below), so a mistyped IP never becomes a record name.
+		case "$_a" in *:*) _isip=1 ;; *[!0-9.]*) _isip=0 ;; *) _isip=1 ;; esac
+		if [ "$_isip" = 1 ]; then _ip=$_a
+		else
+			case "$_a" in *[!A-Za-z0-9.@_*-]*) die 1 "Invalid record name: '$_a'" ;; esac
+			_names="$_names $_a"
+		fi
+	done
+	[ -n "$_names" ] || _names=$CF_RECORD_NAME
+	CF_RECORD_NAME=${_names# }   # for check_config
 	check_config
-	_ip=${1-}
-	# ASUS passes its WAN IP; behind another router/CGNAT that is a private
-	# address, so fall back to asking an external service.
+
+	[ -z "$_ip" ] || is_valid_ip "$_ip" || die 2 "Invalid $CF_RECORD_TYPE address: '$_ip'"
+	# ASUS passes its WAN IP; behind another gateway/CGNAT that is a private
+	# address, so ask an external service instead.
 	if [ "$CF_RECORD_TYPE" = A ] && [ -n "$_ip" ] && is_private_ipv4 "$_ip"; then
-		_log "WAN IP $_ip is private (double NAT?), detecting public IP instead"
+		_log "IP $_ip is private (behind a gateway?), detecting public IP instead"
 		_ip=""
 	fi
 	if [ -z "$_ip" ]; then
-		_ip=$(detect_ip) || die 2 "Could not detect public IP"
+		_ip=$(detect_ip) || die 2 "Could not detect public IP from: ${CF_IP_URLS:-defaults}"
 	fi
-	is_valid_ip "$_ip" || die 2 "Invalid $CF_RECORD_TYPE address: '$_ip'"
 	_debug "IP: $_ip"
+
+	# One subshell per name so a failure on one record does not stop the rest;
+	# the script exits with the highest error code.
+	_rc=0
+	for _n in $_names; do
+		( update_one "$_n" "$_ip" ); _r=$?
+		[ "$_r" -gt "$_rc" ] && _rc=$_r
+	done
+	return "$_rc"
+}
+
+# @1 name  @2 IP
+update_one() {
+	resolve_name "$1"; CF_RECORD_NAME=$FQDN; _ip=$2
 
 	# Fast path: nothing changed since our last successful update.
 	_last_key="last_${CF_RECORD_TYPE}_${CF_RECORD_NAME}"
@@ -315,7 +387,7 @@ cmd_update() {
 }
 
 usage() {
-	sed -n '2,15s/^# \{0,1\}//p' "$0"
+	sed -n '2,23s/^# \{0,1\}//p' "$0"
 }
 
 main() {
@@ -323,12 +395,15 @@ main() {
 	_cmd=${1:-list}
 	[ $# -gt 0 ] && shift
 	case "$_cmd" in
-	list)    cmd_list ;;
+	list)    cmd_list "$@" ;;
 	update|up) cmd_update "$@" ;;
-	check)   cmd_check ;;
+	check)   cmd_check "$@" ;;
 	verify)  cmd_verify ;;
 	-h|--help|help) usage ;;
-	*) usage; exit 1 ;;
+	-*) usage; exit 1 ;;
+	# Like ali_ddns.sh: any other argument means "update"; it is taken as
+	# a record name (or an IP).
+	*)       cmd_update "$_cmd" "$@" ;;
 	esac
 }
 

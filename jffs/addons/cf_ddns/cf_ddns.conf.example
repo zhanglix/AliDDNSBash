@@ -1,0 +1,18 @@
+# Copy to /jffs/addons/cf_ddns/cf_ddns.conf and `chmod 600` it: it holds your API token.
+#
+# Create the token at https://dash.cloudflare.com/profile/api-tokens with
+# "Edit zone DNS" template, scoped to this one zone only.
+CF_API_TOKEN="paste-token-here"
+
+CF_ZONE_NAME="example.com"
+# CF_ZONE_ID=""              # optional; saves one lookup (cached anyway)
+
+CF_RECORD_NAME="www.example.com"   # full name; use "example.com" for the apex
+CF_RECORD_TYPE="A"                 # A (IPv4) or AAAA (IPv6)
+CF_PROXIED="keep"                  # true | false | keep
+CF_TTL="1"                         # 1 = automatic
+CF_CREATE_MISSING="false"
+
+# CF_IP_URL="https://1.1.1.1/cdn-cgi/trace"   # default for A records
+# CF_CACHE_DIR="/tmp/cf_ddns"
+# CF_CURL_OPTS=""   # e.g. "--cacert /jffs/ssl/ca.crt" if curl cannot verify TLS
